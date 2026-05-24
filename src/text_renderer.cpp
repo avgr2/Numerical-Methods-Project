@@ -147,7 +147,7 @@ void TextRenderer::buildAtlas()
             unsigned char bits = kFont8x8[g][row];
             for (int col = 0; col < GLYPH_W; ++col)
             {
-                bool lit = (bits >> (7 - col)) & 1;
+                bool lit = (bits >> col) & 1;
                 pixels[row * ATLAS_W + g * GLYPH_W + col] = lit ? 255 : 0;
             }
         }
@@ -213,8 +213,8 @@ void TextRenderer::draw(const std::string& text,
         //    vertex (x, y_top)  gets  v = 0
         //    vertex (x, y_bot)  gets  v = 1
         // ─────────────────────────────────────────────────────────────
-        const float v_glyph_top    = 0.0f;
-        const float v_glyph_bottom = 1.0f;
+        const float v_glyph_top    = 0.0f;   // ← swappé
+        const float v_glyph_bottom = 1.0f;   // ← swappé
 
         // Triangle 1
         verts.insert(verts.end(), {x0, y_top, u0, v_glyph_top});
