@@ -2,14 +2,10 @@
 #include "shader.hpp"
 
 #include <glm/gtc/type_ptr.hpp>
-#include <stdexcept>
-#include <cstring>
+#include <vector>
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  8×8 bitmap font – printable ASCII 0x20 … 0x7E  (public domain)
-// ═══════════════════════════════════════════════════════════════════════════
 static const unsigned char kFont8x8[95][8] = {
-    {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}, // 0x20 SPACE
+    {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}, // SPACE
     {0x18,0x3C,0x3C,0x18,0x18,0x00,0x18,0x00}, // !
     {0x36,0x36,0x00,0x00,0x00,0x00,0x00,0x00}, // "
     {0x36,0x36,0x7F,0x36,0x7F,0x36,0x36,0x00}, // #
@@ -112,29 +108,21 @@ static constexpr int GLYPH_H   = 8;
 static constexpr int ATLAS_W   = ATLAS_COLS * GLYPH_W;
 static constexpr int ATLAS_H   = GLYPH_H;
 
-// ─────────────────────────────────────────────────────────────────────────
-TextRenderer::TextRenderer(int w, int h,
-                           const char* vertPath,
-                           const char* fragPath)
+TextRenderer::TextRenderer(int w, int h, const char* vertPath, const char* fragPath)
     : winW_(w), winH_(h)
 {
     prog_ = createShaderProgram(vertPath, fragPath);
-
     glGenVertexArrays(1, &vao_);
     glGenBuffers(1, &vbo_);
-
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-
     const GLsizei stride = 4 * sizeof(float);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, stride, (void*)0);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, (void*)(2*sizeof(float)));
     glEnableVertexAttribArray(1);
-
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
-
     buildAtlas();
 }
 
@@ -147,19 +135,20 @@ TextRenderer::~TextRenderer()
 
 void TextRenderer::buildAtlas()
 {
+    // ─────────────────────────────────────────────────────────────────
+    //  NO FLIP HERE. Store rows top-down exactly as in kFont8x8.
+    //  We handle the OpenGL Y-inversion in the UV coordinates in draw().
+    // ─────────────────────────────────────────────────────────────────
     std::vector<unsigned char> pixels(ATLAS_W * ATLAS_H, 0);
 
-    // OpenGL origin is bottom-left, but our font rows go top-down (row 0 = top).
-    // Store rows in reverse so row 0 ends up at the TOP when rendered.
     for (int g = 0; g < ATLAS_COLS; ++g)
         for (int row = 0; row < GLYPH_H; ++row)
         {
             unsigned char bits = kFont8x8[g][row];
-            int flippedRow = (GLYPH_H - 1) - row;   // flip vertically
             for (int col = 0; col < GLYPH_W; ++col)
             {
                 bool lit = (bits >> (7 - col)) & 1;
-                pixels[flippedRow * ATLAS_W + g * GLYPH_W + col] = lit ? 255 : 0;
+                pixels[row * ATLAS_W + g * GLYPH_W + col] = lit ? 255 : 0;
             }
         }
 
@@ -173,24 +162,6 @@ void TextRenderer::buildAtlas()
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-//  draw
-//
-//  Pixel coordinate system: (0,0) = top-left of window.
-//  px, py are in that system.
-//
-//  OpenGL NDC: y=+1 at top, y=-1 at bottom.
-//  Pixel (px, py) from top-left maps to NDC:
-//    ndcX =  2*px/W - 1
-//    ndcY = -(2*py/H - 1)  =  1 - 2*py/H
-//
-//  For a glyph at pixel (px, py) with height gh:
-//    top-left pixel  = (px,    py)
-//    bottom-left px  = (px,    py + gh)
-//    in NDC:
-//    x0 = 2*px/W - 1,         x1 = 2*(px+gw)/W - 1
-//    y_top (NDC) = 1-2*py/H,  y_bot (NDC) = 1-2*(py+gh)/H
-// ─────────────────────────────────────────────────────────────────────────
 void TextRenderer::draw(const std::string& text,
                         float px, float py,
                         float scale,
@@ -204,33 +175,55 @@ void TextRenderer::draw(const std::string& text,
     std::vector<float> verts;
     verts.reserve(text.size() * 6 * 4);
 
-    float cx = px;   // current x cursor (pixels from left)
+    float cx = px;
 
     for (char c : text)
     {
         int idx = (int)(unsigned char)c - 0x20;
         if (idx < 0 || idx >= ATLAS_COLS) { cx += gw; continue; }
 
-        // Atlas UV
+        // Horizontal UV: straightforward
         float u0 = (float)(idx * GLYPH_W)           / ATLAS_W;
         float u1 = (float)(idx * GLYPH_W + GLYPH_W) / ATLAS_W;
-        // Atlas is now stored bottom-up (flipped in buildAtlas).
-        // v=0 → bottom of texture = top of glyph (row 0 flipped to bottom)
-        // v=1 → top of texture    = bottom of glyph
-        // NDC: y0 = screen top, y1 = screen bottom
-        float x0 =  2.0f * cx        / W - 1.0f;
+
+        // ─────────────────────────────────────────────────────────────
+        //  SCREEN positions (NDC)
+        //  px,py = top-left in pixels, origin = window top-left
+        //
+        //  NDC x =  2*pixel_x / W - 1
+        //  NDC y =  1 - 2*pixel_y / H      (Y flipped: screen top = NDC +1)
+        //
+        //  y_ndc_top    = 1 - 2* py      / H   (top    of glyph on screen)
+        //  y_ndc_bottom = 1 - 2*(py+gh)  / H   (bottom of glyph on screen)
+        // ─────────────────────────────────────────────────────────────
+        float x0 =  2.0f *  cx       / W - 1.0f;
         float x1 =  2.0f * (cx + gw) / W - 1.0f;
-        float y0 =  1.0f - 2.0f * py        / H;   // screen top
-        float y1 =  1.0f - 2.0f * (py + gh) / H;   // screen bottom
+        float y_top =  1.0f - 2.0f *  py       / H;
+        float y_bot =  1.0f - 2.0f * (py + gh) / H;
 
-        // v=0 maps to flipped row 0 = glyph top → goes to y0 (screen top)
-        verts.insert(verts.end(), {x0,y0, u0,0.0f});
-        verts.insert(verts.end(), {x0,y1, u0,1.0f});
-        verts.insert(verts.end(), {x1,y1, u1,1.0f});
+        // ─────────────────────────────────────────────────────────────
+        //  VERTICAL UV
+        //  kFont8x8 row 0 is the TOP of the glyph.
+        //  glTexImage2D row 0 is read by OpenGL as the BOTTOM of the texture.
+        //  Therefore:
+        //    v = 0  →  OpenGL bottom  →  kFont8x8 row 0  →  glyph TOP
+        //    v = 1  →  OpenGL top     →  kFont8x8 row 7  →  glyph BOTTOM
+        //
+        //  We want glyph TOP at y_top and glyph BOTTOM at y_bot, so:
+        //    vertex (x, y_top)  gets  v = 0
+        //    vertex (x, y_bot)  gets  v = 1
+        // ─────────────────────────────────────────────────────────────
+        const float v_glyph_top    = 0.0f;
+        const float v_glyph_bottom = 1.0f;
 
-        verts.insert(verts.end(), {x0,y0, u0,0.0f});
-        verts.insert(verts.end(), {x1,y1, u1,1.0f});
-        verts.insert(verts.end(), {x1,y0, u1,0.0f});
+        // Triangle 1
+        verts.insert(verts.end(), {x0, y_top, u0, v_glyph_top});
+        verts.insert(verts.end(), {x0, y_bot, u0, v_glyph_bottom});
+        verts.insert(verts.end(), {x1, y_bot, u1, v_glyph_bottom});
+        // Triangle 2
+        verts.insert(verts.end(), {x0, y_top, u0, v_glyph_top});
+        verts.insert(verts.end(), {x1, y_bot, u1, v_glyph_bottom});
+        verts.insert(verts.end(), {x1, y_top, u1, v_glyph_top});
 
         cx += gw;
     }
@@ -239,22 +232,18 @@ void TextRenderer::draw(const std::string& text,
 
     glUseProgram(prog_);
     glUniform3fv(glGetUniformLocation(prog_, "uColor"), 1, glm::value_ptr(color));
-
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, atlasTexture_);
     glUniform1i(glGetUniformLocation(prog_, "uAtlas"), 0);
-
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER,
                  verts.size() * sizeof(float),
                  verts.data(), GL_DYNAMIC_DRAW);
-
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDrawArrays(GL_TRIANGLES, 0, (GLsizei)(verts.size() / 4));
     glDisable(GL_BLEND);
-
     glBindVertexArray(0);
 }
 
