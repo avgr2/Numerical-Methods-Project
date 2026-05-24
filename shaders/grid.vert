@@ -1,15 +1,13 @@
 #version 330 core
 
-// grid.vert – axis-aligned grid lines in world space
-// Each vertex is just a 2D world position.
+// grid.vert
+// Each vertex: vec2 position + float type (0=minor, 1=major axis)
+// Segments are uploaded as GL_LINES pairs, so no zigzag.
 
-layout (location = 0) in vec2 aPos;
+layout (location = 0) in vec2  aPos;
+layout (location = 1) in float aType;
 
 uniform mat4 uProjection;
-
-// Pass a "type" flag: 0 = minor grid, 1 = major axis
-// We encode it as a float attribute at location 1.
-layout (location = 1) in float aType;
 
 out float vType;
 

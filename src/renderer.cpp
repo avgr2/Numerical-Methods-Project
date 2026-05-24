@@ -4,116 +4,117 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <stdexcept>
 
-// ─────────────────────────────────────────────────────────────────────────
-//  Constructor
-// ─────────────────────────────────────────────────────────────────────────
 Renderer::Renderer(DrawMode mode,
                    const char* vertPath,
                    const char* fragPath)
     : mode_(mode), vertexCount_(0)
 {
     prog_ = createShaderProgram(vertPath, fragPath);
-
-    glGenVertexArrays(1, &VAO_);
-    glGenBuffers(1, &VBO_);
-
-    glBindVertexArray(VAO_);
-    glBindBuffer(GL_ARRAY_BUFFER, VBO_);
-
+    glGenVertexArrays(1, &vao_);
+    glGenBuffers(1, &vbo_);
+    glBindVertexArray(vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     setupAttributes();
-
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-//  setupAttributes  – configure VAO layout depending on mode
-// ─────────────────────────────────────────────────────────────────────────
+Renderer::~Renderer()
+{
+    glDeleteBuffers(1, &vbo_);
+    glDeleteVertexArrays(1, &vao_);
+}
+
+int Renderer::stride() const
+{
+    switch (mode_) {
+        case DrawMode::POINTS:    return 2;
+        case DrawMode::LINES:     return 3;   // x,y,type
+        case DrawMode::LINE_STRIP:return 3;   // x,y,speed
+        case DrawMode::COMET:     return 3;   // x,y,alpha
+    }
+    return 2;
+}
+
 void Renderer::setupAttributes()
 {
-    if (mode_ == DrawMode::LINE)
+    if (mode_ == DrawMode::POINTS)
     {
-        // Stride = 3 floats : [ x, y, speed ]
-        const GLsizei stride = 3 * sizeof(float);
-
-        // location 0 : position (x, y)
+        // location 0 : vec2 position
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE,
-                              stride, (void*)0);
+                              2*sizeof(float), (void*)0);
         glEnableVertexAttribArray(0);
-
-        // location 1 : speed
-        glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE,
-                              stride, (void*)(2 * sizeof(float)));
-        glEnableVertexAttribArray(1);
     }
-    else   // POINTS
+    else
     {
-        // Stride = 2 floats : [ x, y ]
-        const GLsizei stride = 2 * sizeof(float);
-
+        // location 0 : vec2 position
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE,
-                              stride, (void*)0);
+                              3*sizeof(float), (void*)0);
         glEnableVertexAttribArray(0);
+        // location 1 : float (type / speed / alpha)
+        glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE,
+                              3*sizeof(float), (void*)(2*sizeof(float)));
+        glEnableVertexAttribArray(1);
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-//  uploadData
-// ─────────────────────────────────────────────────────────────────────────
 void Renderer::uploadData(const std::vector<float>& data)
 {
-    const int stride = (mode_ == DrawMode::LINE) ? 3 : 2;
-    vertexCount_     = static_cast<GLsizei>(data.size() / stride);
-
-    glBindBuffer(GL_ARRAY_BUFFER, VBO_);
+    vertexCount_ = (GLsizei)(data.size() / stride());
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER,
-                 data.size() * sizeof(float),
-                 data.data(),
-                 GL_STATIC_DRAW);
+                 data.size()*sizeof(float),
+                 data.data(), GL_DYNAMIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-//  render
-// ─────────────────────────────────────────────────────────────────────────
 void Renderer::render(const glm::mat4& projection,
-                      float speedMin,
-                      float speedMax) const
+                      float param0, float param1) const
 {
     if (vertexCount_ == 0) return;
 
     glUseProgram(prog_);
+    glUniformMatrix4fv(glGetUniformLocation(prog_, "uProjection"),
+                       1, GL_FALSE, glm::value_ptr(projection));
 
-    // Projection matrix (common to both shaders)
-    GLint loc = glGetUniformLocation(prog_, "uProjection");
-    glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(projection));
-
-    if (mode_ == DrawMode::LINE)
+    if (mode_ == DrawMode::LINE_STRIP)
     {
-        glUniform1f(glGetUniformLocation(prog_, "uSpeedMin"), speedMin);
-        glUniform1f(glGetUniformLocation(prog_, "uSpeedMax"), speedMax);
+        glUniform1f(glGetUniformLocation(prog_, "uSpeedMin"), param0);
+        glUniform1f(glGetUniformLocation(prog_, "uSpeedMax"), param1);
     }
 
-    glBindVertexArray(VAO_);
+    glBindVertexArray(vao_);
 
-    if (mode_ == DrawMode::LINE)
+    switch (mode_)
     {
-        // Slightly thicker line for visibility
-        glLineWidth(2.0f);
+    case DrawMode::LINES:
+        glLineWidth(1.0f);
+        glDrawArrays(GL_LINES, 0, vertexCount_);
+        break;
+
+    case DrawMode::LINE_STRIP:
+        glLineWidth(2.5f);
         glDrawArrays(GL_LINE_STRIP, 0, vertexCount_);
         glLineWidth(1.0f);
-    }
-    else  // POINTS
-    {
-        // Enable point-size set in vertex shader and alpha blending
+        break;
+
+    case DrawMode::POINTS:
         glEnable(GL_PROGRAM_POINT_SIZE);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
         glDrawArrays(GL_POINTS, 0, vertexCount_);
-
         glDisable(GL_BLEND);
         glDisable(GL_PROGRAM_POINT_SIZE);
+        break;
+
+    case DrawMode::COMET:
+        glEnable(GL_PROGRAM_POINT_SIZE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);   // additive for glow
+        glDrawArrays(GL_POINTS, 0, vertexCount_);
+        glDisable(GL_BLEND);
+        glDisable(GL_PROGRAM_POINT_SIZE);
+        break;
     }
 
     glBindVertexArray(0);

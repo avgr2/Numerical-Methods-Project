@@ -6,15 +6,22 @@
 
 // ─────────────────────────────────────────────────────────────────────────
 //  DrawMode
-//    LINE   : GL_LINE_STRIP, uses line.vert / line.frag
-//             Expects interleaved vertex data: x, y, speed  (3 floats/vertex)
-//             Needs uSpeedMin / uSpeedMax uniforms.
 //
-//    POINTS : GL_POINTS with large point sprites, uses point.vert / point.frag
-//             Expects vertex data: x, y  (2 floats/vertex)
+//  LINES   : GL_LINES  (explicit pairs) – used for the grid
+//            Stride = 3 floats : x, y, type
+//
+//  LINE_STRIP : GL_LINE_STRIP – trajectory colour ramp
+//            Stride = 3 floats : x, y, speed
+//
+//  POINTS  : GL_POINTS with large sprites – observations & comet
+//            Stride = 2 floats : x, y
+//            (comet adds alpha as 3rd float → stride = 3)
+//
+//  COMET   : GL_POINTS with alpha attribute
+//            Stride = 3 floats : x, y, alpha
 // ─────────────────────────────────────────────────────────────────────────
 
-enum class DrawMode { LINE, POINTS };
+enum class DrawMode { LINES, LINE_STRIP, POINTS, COMET };
 
 class Renderer
 {
@@ -22,24 +29,20 @@ public:
     explicit Renderer(DrawMode mode,
                       const char* vertPath,
                       const char* fragPath);
+    ~Renderer();
 
-    // Upload raw vertex data.
-    // LINE mode   : pass { x0, y0, s0,  x1, y1, s1, ... }  (stride = 3)
-    // POINTS mode : pass { x0, y0,  x1, y1, ... }           (stride = 2)
     void uploadData(const std::vector<float>& data);
 
-    // Draw the uploaded geometry.
-    // LINE mode   : also pass speedMin / speedMax for the colour ramp.
     void render(const glm::mat4& projection,
-                float speedMin = 0.0f,
-                float speedMax = 1.0f) const;
+                float param0 = 0.0f,   // speedMin  (LINE_STRIP)
+                float param1 = 1.0f    // speedMax  (LINE_STRIP)
+               ) const;
 
 private:
     DrawMode mode_;
-    GLuint   VAO_;
-    GLuint   VBO_;
-    GLuint   prog_;
+    GLuint   vao_, vbo_, prog_;
     GLsizei  vertexCount_;
 
+    int stride() const;
     void setupAttributes();
 };
