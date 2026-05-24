@@ -1,0 +1,27 @@
+# Build
+build/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# VSCode
+.vscode/
+
+# CLion
+.idea/
+
+# Binary
+*.out
+*.o
+*.so
+*.a
+
+# Executables
+projectile
+
+# OS
+.DS_Store
