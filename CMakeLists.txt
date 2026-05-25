@@ -14,7 +14,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # =========================================================
 
 find_package(OpenGL REQUIRED)
-find_package(glfw3 REQUIRED)
+# find_package(glfw3 REQUIRED)
 
 # =========================================================
 # INCLUDE DIRECTORIES
@@ -54,6 +54,12 @@ target_link_libraries(projectile
     OpenGL::GL
     glfw
 )
+
+# target_link_options(projectile PRIVATE
+#    -static
+#    -static-libgcc
+#    -static-libstdc++
+#)
 
 # =========================================================
 # COPY SHADERS TO BUILD DIRECTORY
