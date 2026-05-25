@@ -41,6 +41,7 @@ add_executable(projectile
     src/renderer.cpp
     src/shader.cpp
     src/text_renderer.cpp
+    src/post_process.cpp
 
     # glad
     external/include/glad/src/glad.c

@@ -13,9 +13,11 @@
 #include "physics.hpp"
 #include "renderer.hpp"
 #include "text_renderer.hpp"
+#include "post_process.hpp"
 
 static const int WIN_W = 1280;
 static const int WIN_H = 720;
+static double gSimSpeed = 1.0;
 
 static void separator()
 {
@@ -214,23 +216,41 @@ int main(int argc, char* argv[])
     TextRenderer text(WIN_W, WIN_H,
                       "shaders/text.vert", "shaders/text.frag");
 
+    PostProcess post(WIN_W, WIN_H);
+
+    glfwSetWindowUserPointer(window, &post);
+
+    glfwSetFramebufferSizeCallback(window,
+        [](GLFWwindow* win, int w, int h)
+        {
+            glViewport(0, 0, w, h);
+
+            auto* pp = static_cast<PostProcess*>(
+                glfwGetWindowUserPointer(win));
+
+            if (pp)
+                pp->resize(w, h);
+        });
+
     // ── 8. Animation state ────────────────────────────────────────────────
     static const int TRAIL_LEN = 40;
     double simTime  = 0.0;
-    double simSpeed = 1.0;
     double wallPrev = glfwGetTime();
 
-    glfwSetWindowUserPointer(window, &simSpeed);
+
     glfwSetKeyCallback(window, [](GLFWwindow* w, int key, int, int action, int)
     {
         if (action != GLFW_PRESS && action != GLFW_REPEAT) return;
-        double& spd = *static_cast<double*>(glfwGetWindowUserPointer(w));
+
         if (key == GLFW_KEY_EQUAL || key == GLFW_KEY_KP_ADD)
-            spd = std::min(spd * 2.0, 32.0);
+            gSimSpeed = std::min(gSimSpeed * 2.0, 32.0);
+
         if (key == GLFW_KEY_MINUS || key == GLFW_KEY_KP_SUBTRACT)
-            spd = std::max(spd * 0.5, 0.125);
+            gSimSpeed = std::max(gSimSpeed * 0.5, 0.125);
+
         if (key == GLFW_KEY_SPACE)
-            spd = 1.0;
+            gSimSpeed = 1.0;
+
         if (key == GLFW_KEY_ESCAPE)
             glfwSetWindowShouldClose(w, GLFW_TRUE);
     });
@@ -256,7 +276,7 @@ int main(int argc, char* argv[])
     {
         // Time
         double wallNow = glfwGetTime();
-        simTime += (wallNow - wallPrev) * simSpeed;
+        simTime += (wallNow - wallPrev) * gSimSpeed;
         wallPrev = wallNow;
         if (simTime > t_impact) simTime = 0.0;   // loop
 
@@ -283,12 +303,15 @@ int main(int argc, char* argv[])
         rComet.uploadData(cometV);
 
         // ── Draw ──────────────────────────────────────────────────────────
-        glClear(GL_COLOR_BUFFER_BIT);
+        post.bindScene();
+
+
 
         rGrid.render(projection);                          // 1. grid
         rLine.render(projection, spd_min, spd_max);        // 2. trajectory
         rObs.render(projection);                           // 3. observations
         rComet.render(projection);                         // 4. comet
+        post.process(0.35f, 1.2f);
 
         // ── Text overlay ──────────────────────────────────────────────────
         const float S  = 2.0f;
@@ -313,7 +336,7 @@ int main(int argc, char* argv[])
 
         // Live sim time
         std::string sTime = "t_sim   = " + fmt(simTime,2) +
-                            " s  (x"    + fmt(simSpeed,2) + ")";
+                            " s  (x"    + fmt(gSimSpeed,2) + ")";
         drawShadowed(sTime, tx, ty, {0.60f, 1.00f, 0.60f}); ty += lh*1.6f;
 
         // Controls
