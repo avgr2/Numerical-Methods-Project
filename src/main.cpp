@@ -14,6 +14,9 @@
 #include "physics.hpp"
 #include "renderer.hpp"
 #include "text_renderer.hpp"
+#include "heatmap_view.hpp"
+#include "shader.hpp"
+#include <glm/gtc/type_ptr.hpp>
 
 static const int WIN_W = 1280;
 static const int WIN_H = 720;
@@ -123,13 +126,9 @@ int main(int argc, char* argv[])
     // ── 3. Post-processing ────────────────────────────────────────────────
     separator();
     const double t_last = observations.back().t;
-    std::cout << "DEBUG: calling find_impact...\n"; std::cout.flush();
     auto [x_impact,t_impact] = physics.find_impact       (params,0.01,t_last,300.0);
-    std::cout << "DEBUG: x_impact=" << x_impact << " t_impact=" << t_impact << '\n'; std::cout.flush();
     auto [y_max,   t_ymax  ] = physics.find_max_altitude  (params,0.01,300.0);
-    std::cout << "DEBUG: y_max=" << y_max << " t_ymax=" << t_ymax << '\n'; std::cout.flush();
     auto [v_min,   t_vmin  ] = physics.find_min_velocity  (params,0.01,300.0);
-    std::cout << "DEBUG: v_min=" << v_min << " t_vmin=" << t_vmin << '\n'; std::cout.flush();
 
     separator();
     std::cout << std::fixed << std::setprecision(4);
@@ -139,10 +138,8 @@ int main(int argc, char* argv[])
     separator();
 
     // ── 4. Trajectory data for rendering ─────────────────────────────────
-    std::cout << "DEBUG: calling simulate, t_impact=" << t_impact << '\n'; std::cout.flush();
     auto model_traj = physics.simulate(params, 0.01, t_impact+0.5);
     const int N = (int)model_traj.size();
-    std::cout << "DEBUG: simulate done, N=" << N << '\n'; std::cout.flush();
 
     std::vector<float> line_verts;
     line_verts.reserve(N*3);
@@ -165,13 +162,20 @@ int main(int argc, char* argv[])
     for(auto& pt:observations){obs_verts.push_back((float)pt.x);obs_verts.push_back((float)pt.y);}
 
     // Marker vertices : y_max point (shape=0) + impact point (shape=1)
+    // Find x coordinate at y_max by scanning trajectory
+    float x_at_ymax = (float)model_traj[0].x;
+    float best_diff = 1e9f;
+    for (const auto& pt : model_traj) {
+        float diff = std::abs((float)pt.y - (float)y_max);
+        if (diff < best_diff) {
+            best_diff = diff;
+            x_at_ymax = (float)pt.x;
+        }
+    }
     std::vector<float> marker_verts = {
-        (float)model_traj[0].x, (float)y_max,   0.0f,   // y_max  marker (cross)
-        (float)x_impact,        0.0f,            1.0f    // impact marker (triangle)
+        x_at_ymax,        (float)y_max,  0.0f,   // y_max  marker (cross)
+        (float)x_impact,  0.0f,          1.0f    // impact marker (triangle)
     };
-    // find x at y_max
-    for(auto& pt:model_traj)
-        if(std::abs(pt.y-y_max)<1.0){ marker_verts[0]=(float)pt.x; break; }
 
     // ── 5. Bounding box + projection ──────────────────────────────────────
     float xMin=1e9f,xMax=-1e9f,yMinF=1e9f,yMaxF=-1e9f;
@@ -214,7 +218,8 @@ int main(int argc, char* argv[])
     rGrid.uploadData(buildGrid(L,R,B,T,gridStep));
     rLine.uploadData(line_verts);
     rObs.uploadData(obs_verts);
-    rMarker.uploadData(marker_verts);
+    if (marker_verts.size() >= 6)
+        rMarker.uploadData(marker_verts);
 
     TextRenderer text(WIN_W,WIN_H,"shaders/text.vert","shaders/text.frag");
 
@@ -308,6 +313,138 @@ int main(int argc, char* argv[])
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
+    glfwTerminate();
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  HEATMAP WINDOW  – chi2 landscape around the converged solution
+    // ═══════════════════════════════════════════════════════════════════════
+    if (!glfwInit()) return 0;
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_SAMPLES, 4);
+
+    std::string htitle = "chi2 landscape – Dataset " + std::to_string(dataset_num);
+    GLFWwindow* hwin = glfwCreateWindow(900, 720, htitle.c_str(), nullptr, nullptr);
+    if (!hwin) { glfwTerminate(); return 0; }
+    glfwMakeContextCurrent(hwin);
+    gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
+    glViewport(0, 0, 900, 720);
+
+    // Compute heatmap (grid resolution 120×120, coarse dt for speed)
+    HeatmapView heatmap(120, 0.5f);
+    heatmap.compute(observations, params, free, 0.05);
+
+    // Text renderer for axis labels
+    TextRenderer htxt(900, 720, "shaders/text.vert", "shaders/text.frag");
+
+    // Axis label strings — heatmap.paramMin/Max(0) = X axis, (1) = Y axis
+    // X = non-mu param (v0, theta0, x0...), Y = mu
+    std::string sXlabel, sYlabel;
+    if (free.size() >= 2) {
+        // find which param is on X vs Y (same logic as heatmap_view)
+        int idx_x = 0, idx_y = 1;
+        for (int i=0;i<(int)free.size();++i) if(free[i]==IDX_MU){idx_y=i;break;}
+        for (int i=0;i<(int)free.size();++i) if(i!=idx_y){idx_x=i;break;}
+        sXlabel = Physics::param_name(free[idx_x])
+                  + " [" + fmt(heatmap.paramMin(0),3) + " .. " + fmt(heatmap.paramMax(0),3) + "]";
+        sYlabel = Physics::param_name(free[idx_y])
+                  + " [" + fmt(heatmap.paramMin(1),5) + " .. " + fmt(heatmap.paramMax(1),5) + "]";
+    } else {
+        sXlabel = Physics::param_name(free[0])
+                  + " [" + fmt(heatmap.paramMin(0),5) + " .. " + fmt(heatmap.paramMax(0),5) + "]";
+        sYlabel = "";
+    }
+    std::string sChi2  = "chi2  [" + fmt(heatmap.chi2Min(),1)
+                         + " .. " + fmt(heatmap.chi2Max(),1) + "]";
+    std::string sSol   = "Converged solution marked with crosshair";
+
+    // Crosshair renderer (2 lines: vertical + horizontal)
+    // In NDC: map param value → NDC x/y
+    auto paramToNDC0 = [&](float v) -> float {
+        return 2.0f*(v - heatmap.paramMin(0))/(heatmap.paramMax(0)-heatmap.paramMin(0))-1.0f;
+    };
+    auto paramToNDC1 = [&](float v) -> float {
+        return 2.0f*(v - heatmap.paramMin(1))/(heatmap.paramMax(1)-heatmap.paramMin(1))-1.0f;
+    };
+
+    float cx = paramToNDC0((float)Physics::get_param(params, free[0]));
+    float cy = (free.size()>=2)
+               ? paramToNDC1((float)Physics::get_param(params, free[1]))
+               : 0.0f;
+
+    // White crosshair using a simple line renderer
+    // We reuse grid shader (white colour for type=1)
+    // Crosshair data: vertical line + horizontal line, stride=3
+    std::vector<float> crossData = {
+        cx, -1.0f, 1.0f,   cx,  1.0f, 1.0f,   // vertical
+       -1.0f, cy,  1.0f,   1.0f, cy,  1.0f     // horizontal
+    };
+    // Use a simple VAO/VBO for crosshair
+    GLuint crossVAO, crossVBO, crossProg;
+    crossProg = createShaderProgram("shaders/grid.vert", "shaders/grid.frag");
+    glGenVertexArrays(1, &crossVAO);
+    glGenBuffers(1, &crossVBO);
+    glBindVertexArray(crossVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, crossVBO);
+    glBufferData(GL_ARRAY_BUFFER, crossData.size()*sizeof(float),
+                 crossData.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1,1,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)(2*sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glBindVertexArray(0);
+
+    // Identity projection for crosshair (already in NDC)
+    glm::mat4 ident = glm::mat4(1.0f);
+
+    glfwSetKeyCallback(hwin, [](GLFWwindow* w,int key,int,int action,int){
+        if (action==GLFW_PRESS && key==GLFW_KEY_ESCAPE)
+            glfwSetWindowShouldClose(w, GLFW_TRUE);
+    });
+
+    while (!glfwWindowShouldClose(hwin))
+    {
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        // 1. Heatmap fullscreen
+        heatmap.render();
+
+        // 2. White crosshair at converged solution
+        glUseProgram(crossProg);
+        glUniformMatrix4fv(glGetUniformLocation(crossProg,"uProjection"),
+                           1,GL_FALSE,glm::value_ptr(ident));
+        glBindVertexArray(crossVAO);
+        glLineWidth(2.0f);
+        glDrawArrays(GL_LINES,0,4);
+        glLineWidth(1.0f);
+        glBindVertexArray(0);
+
+        // 3. Text labels
+        const float S=2.0f, lh=S*8.0f*1.6f;
+        float tx=14.f, ty=14.f;
+        auto dS=[&](const std::string& s,float x,float y,glm::vec3 col){
+            htxt.draw(s,x+1,y+1,S,{0,0,0});
+            htxt.draw(s,x,  y,  S,col);
+        };
+        dS("Dataset "+std::to_string(dataset_num)+" – chi2 landscape",
+           tx, ty, {1.f,0.85f,0.2f});                    ty+=lh*1.5f;
+        dS("x-axis: "+sXlabel, tx,ty,{0.8f,0.95f,1.f});  ty+=lh;
+        if (!sYlabel.empty())
+        { dS("y-axis: "+sYlabel,tx,ty,{0.8f,0.95f,1.f}); ty+=lh; }
+        dS(sChi2,  tx,ty,{0.7f,0.7f,0.7f});               ty+=lh;
+        dS(sSol,   tx,ty,{1.f,1.f,1.f});
+
+        // Bottom labels: min/max of colour bar
+        dS("low chi2",  14.f, 720-50.f, {0.05f,0.05f,0.05f});
+        dS("high chi2", 700.f,720-50.f, {1.f,0.85f,0.f});
+
+        glfwSwapBuffers(hwin);
+        glfwPollEvents();
+    }
+
+    glDeleteVertexArrays(1,&crossVAO);
+    glDeleteBuffers(1,&crossVBO);
     glfwTerminate();
     return 0;
 }
